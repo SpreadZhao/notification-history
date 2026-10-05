@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+data_dir="${XDG_DATA_HOME:-$HOME/.local/share}/notification-history"
+database="$data_dir/history.sqlite3"
+self=$(readlink -f -- "$0")
+
+# Display untrusted notification text without interpreting terminal escapes.
+# Newlines and tabs remain useful in the preview, but not in the list.
+display_filter='def display: gsub("[\u0000-\u0008\u000b-\u001f\u007f-\u009f]"; "");'
+
+fail() {
+    printf 'notification-history: %s\n' "$*" >&2
+    exit 1
+}
+
+db() {
+    sqlite3 -batch -bail -cmd '.timeout 5000' "$database" "$@"
+}
+
+initialize() {
+    umask 077
+    mkdir -p -- "$data_dir"
+    db 'PRAGMA journal_mode=WAL;
+        CREATE TABLE IF NOT EXISTS notifications (
+            id INTEGER PRIMARY KEY,
+            timestamp_us INTEGER NOT NULL,
+            app_name TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            body TEXT NOT NULL
+        );' >/dev/null
+}
+
+listen() {
+    umask 077
+    mkdir -p -- "$data_dir"
+    # Keep the lock next to the database so custom XDG paths remain independent.
+    exec 9>"$data_dir/listener.lock"
+    flock -n 9 || fail 'a listener is already running for this database'
+    initialize
+
+    busctl --user --json=short \
+        --match="type='method_call',path='/org/freedesktop/Notifications',interface='org.freedesktop.Notifications',member='Notify'" \
+        monitor |
+        jq --unbuffered -c '
+            select(.type == "method_call"
+                and .interface == "org.freedesktop.Notifications"
+                and .member == "Notify"
+                and .payload.type == "susssasa{sv}i")
+            | {timestamp_us: .["timestamp-realtime"],
+               app_name: .payload.data[0],
+               summary: .payload.data[3], body: .payload.data[4]}
+            | select((.timestamp_us | type) == "number"
+                and (.app_name | type) == "string"
+                and (.summary | type) == "string"
+                and (.body | type) == "string")' |
+        while IFS= read -r notification; do
+            # Hex-encode the entire JSON object, rather than interpolate text in SQL.
+            local hex
+            hex=$(printf '%s' "$notification" | od -An -v -tx1 | tr -d ' \n')
+            # Send SQL on stdin so large notification bodies do not hit argv limits.
+            printf '%s\n' "WITH event(value) AS (VALUES(CAST(X'$hex' AS TEXT)))
+                INSERT INTO notifications(timestamp_us, app_name, summary, body)
+                SELECT json_extract(value, '\$.timestamp_us'),
+                       json_extract(value, '\$.app_name'),
+                       json_extract(value, '\$.summary'),
+                       json_extract(value, '\$.body') FROM event;" | db
+        done
+}
+
+record() {
+    local id="${1:-}"
+    [[ "$id" =~ ^[1-9][0-9]*$ ]] || fail 'expected a positive notification ID'
+    [[ -f "$database" ]] || fail 'no notifications saved yet'
+    db -readonly -json "SELECT app_name, summary, body,
+        strftime('%Y-%m-%d %H:%M:%S', timestamp_us / 1000000, 'unixepoch', 'localtime') AS time
+        FROM notifications WHERE id=$id;"
+}
+
+preview() {
+    local entry
+    entry=$(record "${1:-}")
+    jq -jr "$display_filter"'
+        .[0] // empty
+        | ((.time + "  " + .app_name) | display), "\n\n",
+          (.summary | display), "\n\n", (.body | display)' <<<"$entry"
+}
+
+copy_notification() {
+    local entry
+    entry=$(record "${1:-}")
+    [[ $(jq 'length' <<<"$entry") == 1 ]] || fail 'notification does not exist'
+    jq -jr '.[0] | .summary + (if .body == "" then "" else "\n" + .body end)' <<<"$entry" |
+        wl-copy --type 'text/plain;charset=utf-8'
+}
+
+list_notifications() {
+    [[ -f "$database" ]] || return 0
+    db -readonly -json "SELECT id, app_name, summary,
+        strftime('%Y-%m-%d %H:%M:%S', timestamp_us / 1000000, 'unixepoch', 'localtime') AS time
+        FROM notifications ORDER BY timestamp_us DESC, id DESC;" |
+        jq -r "$display_filter"'
+            .[] | [.id, .time, (.app_name | display | gsub("[\r\n\t]"; " ")),
+                (.summary | display | gsub("[\r\n\t]"; " "))] | @tsv'
+}
+
+picker() {
+    local input selection quoted_self status header cleanup_command
+    input=$(mktemp)
+    printf -v cleanup_command 'rm -f -- %q' "$input"
+    # Capture the safely quoted path now, before this function's locals go away.
+    # shellcheck disable=SC2064
+    trap "$cleanup_command" EXIT
+    list_notifications >"$input"
+    header='Enter: copy title and body · Esc: close'
+    [[ -s "$input" ]] || header='No notifications saved yet · Esc: close'
+    printf -v quoted_self '%q' "$self"
+    if selection=$(fzf-popup --title "Notification history" -- --with-shell "$BASH -c" \
+        --delimiter=$'\t' --with-nth=2.. --no-sort \
+        --prompt='Notifications> ' --header="$header" \
+        --preview="$quoted_self preview {1}" --preview-window='right,60%,wrap' <"$input"); then
+        [[ -n "$selection" ]] || return 0
+        copy_notification "${selection%%$'\t'*}"
+    else
+        status=$?
+        # fzf returns 1 for no match and 130 when the user cancels.
+        [[ "$status" == 1 || "$status" == 130 ]] || return "$status"
+    fi
+}
+
+usage() {
+    printf '%s\n' 'Usage: notification-history [browse | listen | preview ID | copy ID]'
+}
+
+command="${1:-browse}"
+case "$command" in
+    listen|browse|_picker)
+        [[ $# -le 1 ]] || fail "unexpected arguments for $command"
+        case "$command" in
+            listen) listen ;;
+            browse) picker ;;
+            _picker) picker ;;
+        esac
+        ;;
+    preview|copy)
+        [[ $# == 2 ]] || fail "$command requires a notification ID"
+        if [[ "$command" == preview ]]; then preview "$2"; else copy_notification "$2"; fi
+        ;;
+    -h|--help) usage ;;
+    *) usage >&2; fail "unknown command: $command" ;;
+esac
