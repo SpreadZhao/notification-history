@@ -33,6 +33,7 @@ class NotificationHistory(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.env = dict(os.environ, XDG_DATA_HOME=str(self.root / "data"))
+        self.env.pop("NOTIFICATION_HISTORY_MAX_ENTRIES", None)
         self.database = self.root / "data/notification-history/history.sqlite3"
         self.mocks = self.root / "bin"
         self.mocks.mkdir()
@@ -96,12 +97,16 @@ elif name == 'nvim':
             capture_output=True, check=check, **kwargs,
         )
 
-    def start_listener(self):
+    def start_listener(self, probe=True):
         self.listener = subprocess.Popen(
             ["bash", str(SCRIPT), "listen"], env=self.env,
             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
             start_new_session=True,
         )
+        if not probe:
+            # Startup pruning can be observed without adding readiness records
+            # that would evict retained notifications under a small limit.
+            return
         # A sentinel request proves monitoring is ready, rather than assuming a delay.
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
@@ -160,6 +165,70 @@ elif name == 'nvim':
                 return rows
             time.sleep(0.02)
         self.fail(f"expected {count} records, got {rows!r}")
+
+    def wait_summaries(self, expected):
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            with closing(sqlite3.connect(self.database)) as db:
+                summaries = [row[0] for row in db.execute(
+                    "SELECT summary FROM notifications ORDER BY timestamp_us, id"
+                )]
+            if summaries == expected:
+                return
+            time.sleep(0.02)
+        self.fail(f"expected summaries {expected!r}, got {summaries!r}")
+
+    def test_default_retains_latest_100(self):
+        for index in range(105):
+            self.send(f"notification-{index}", "")
+        self.wait_summaries([f"notification-{index}" for index in range(5, 105)])
+        self.assertEqual(len(self.rows(100)), 100)
+
+    def test_custom_retention_and_reader_snapshot(self):
+        self.stop_listener()
+        self.env["NOTIFICATION_HISTORY_MAX_ENTRIES"] = "1"
+        self.start_listener()
+        self.send("original", "old body")
+        original = self.rows(1)[0]
+        with closing(sqlite3.connect(self.database)) as db:
+            db.execute("BEGIN")
+            self.assertEqual(db.execute("SELECT summary FROM notifications").fetchone()[0], "original")
+            self.send("replacement", "new body", replaces_id=original[0])
+            self.wait_summaries(["replacement"])
+            # A WAL reader keeps its previous snapshot while insert and pruning
+            # commit together; new readers see only the retained replacement.
+            self.assertEqual(db.execute("SELECT summary FROM notifications").fetchone()[0], "original")
+            self.assertIn(b"new body", self.run_app("preview", str(self.rows(1)[0][0])).stdout)
+            db.commit()
+        self.send("third", "")
+        self.wait_summaries(["third"])
+
+    def test_lower_limit_prunes_existing_history_on_startup(self):
+        self.stop_listener()
+        # Deliberately unsorted timestamps and ties prove pruning matches the
+        # menu's timestamp-descending, ID-descending order rather than insertion.
+        with closing(sqlite3.connect(self.database)) as db:
+            db.executemany(
+                "INSERT INTO notifications(timestamp_us, app_name, summary, body) VALUES (?, 'seed', ?, '')",
+                [(10, "old"), (30, "latest-first"), (20, "middle"),
+                 (30, "latest-second"), (5, "old-last-insert")],
+            )
+            db.commit()
+        self.env["NOTIFICATION_HISTORY_MAX_ENTRIES"] = "2"
+        self.start_listener(probe=False)
+        self.wait_summaries(["latest-first", "latest-second"])
+        self.assertEqual(len(self.rows(2)), 2)
+
+    def test_invalid_retention_does_not_modify_database(self):
+        self.send("keep", "original body")
+        original = self.rows(1)
+        self.stop_listener()
+        for invalid in ("", "0", "-1", "1.5", "abc", "01", "1; DELETE FROM notifications", "9223372036854775808"):
+            self.env["NOTIFICATION_HISTORY_MAX_ENTRIES"] = invalid
+            result = self.run_app("listen", check=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(b"NOTIFICATION_HISTORY_MAX_ENTRIES", result.stderr)
+            self.assertEqual(self.rows(1), original)
 
     def test_unicode_multiline_and_sql_text_round_trip(self):
         summary = "中文 'quoted' \\ title\nsecond line"

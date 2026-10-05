@@ -29,6 +29,7 @@ let
   custom = evaluate true {
     enable = true;
     package = pkgs.hello;
+    maxEntries = 250;
   };
   results = lib.runTests {
     testModuleIsOptIn = {
@@ -73,10 +74,39 @@ let
         inherit (enabled.systemd.user.services.notification-history.Service) Environment Restart UMask;
       };
       expected = {
-        Environment = [ "XDG_DATA_HOME=/home/notification-test/.local/share" ];
+        Environment = [
+          "XDG_DATA_HOME=/home/notification-test/.local/share"
+          "NOTIFICATION_HISTORY_MAX_ENTRIES=100"
+        ];
         Restart = "on-failure";
         UMask = "0077";
       };
+    };
+    testCustomRetention = {
+      expr = custom.systemd.user.services.notification-history.Service.Environment;
+      expected = [
+        "XDG_DATA_HOME=/home/notification-test/.local/share"
+        "NOTIFICATION_HISTORY_MAX_ENTRIES=250"
+      ];
+    };
+    testRejectsInvalidRetention = {
+      expr =
+        map
+          (
+            value:
+            (builtins.tryEval (evaluate true { maxEntries = value; }).services.notification-history.maxEntries)
+            .success
+          )
+          [
+            0
+            (-1)
+            "100"
+          ];
+      expected = [
+        false
+        false
+        false
+      ];
     };
   };
 in

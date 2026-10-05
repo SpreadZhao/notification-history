@@ -32,12 +32,24 @@ initialize() {
 }
 
 listen() {
+    local max_entries=${NOTIFICATION_HISTORY_MAX_ENTRIES-100} pruning_sql
+    [[ "$max_entries" =~ ^[1-9][0-9]*$ && ${#max_entries} -le 19 ]] ||
+        fail 'NOTIFICATION_HISTORY_MAX_ENTRIES must be a positive integer'
+    # Compare equal-length decimal strings to avoid signed arithmetic overflow.
+    # shellcheck disable=SC2071
+    if [[ ${#max_entries} == 19 && "$max_entries" > 9223372036854775807 ]]; then
+        fail 'NOTIFICATION_HISTORY_MAX_ENTRIES exceeds the SQLite integer range'
+    fi
+    pruning_sql="DELETE FROM notifications WHERE id IN (
+        SELECT id FROM notifications ORDER BY timestamp_us DESC, id DESC
+        LIMIT -1 OFFSET $max_entries);"
     umask 077
     mkdir -p -- "$data_dir"
     # Keep the lock next to the database so custom XDG paths remain independent.
     exec 9>"$data_dir/listener.lock"
     flock -n 9 || fail 'a listener is already running for this database'
     initialize
+    db "$pruning_sql"
 
     busctl --user --json=short \
         --match="type='method_call',path='/org/freedesktop/Notifications',interface='org.freedesktop.Notifications',member='Notify'" \
@@ -59,12 +71,15 @@ listen() {
             local hex
             hex=$(printf '%s' "$notification" | od -An -v -tx1 | tr -d ' \n')
             # Send SQL on stdin so large notification bodies do not hit argv limits.
-            printf '%s\n' "WITH event(value) AS (VALUES(CAST(X'$hex' AS TEXT)))
+            printf '%s\n' "BEGIN IMMEDIATE;
+                WITH event(value) AS (VALUES(CAST(X'$hex' AS TEXT)))
                 INSERT INTO notifications(timestamp_us, app_name, summary, body)
                 SELECT json_extract(value, '\$.timestamp_us'),
                        json_extract(value, '\$.app_name'),
                        json_extract(value, '\$.summary'),
-                       json_extract(value, '\$.body') FROM event;" | db
+                       json_extract(value, '\$.body') FROM event;
+                $pruning_sql
+                COMMIT;" | db
         done
 }
 
@@ -144,7 +159,8 @@ picker() {
 }
 
 usage() {
-    printf '%s\n' 'Usage: notification-history [browse | listen | preview ID | view ID | copy ID]'
+    printf '%s\n' 'Usage: notification-history [browse | listen | preview ID | view ID | copy ID]' \
+        'Listener retention: NOTIFICATION_HISTORY_MAX_ENTRIES (positive integer, default: 100).'
 }
 
 command="${1:-browse}"

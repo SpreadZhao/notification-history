@@ -29,13 +29,24 @@ The database is `${XDG_DATA_HOME:-$HOME/.local/share}/notification-history/histo
 The listener records incoming desktop `Notify` requests, including requests sent
 while fnott is paused. It starts recording when the service starts; it cannot
 recover notifications from before that time. Each update is a separate record,
-and records are retained across service restarts without automatic pruning.
+and records are retained across service restarts. By default, only the newest
+100 records are retained. Older records are removed on listener startup and after
+every insert, using the same timestamp and ID order as the menu. Insertion and
+pruning share one transaction, so concurrent readers see a consistent history.
 
 Home Manager options:
 
 ```nix
 services.notification-history.enable = true;
+services.notification-history.maxEntries = 100; # Positive integer; default: 100
 # services.notification-history.package = anotherNotificationHistoryPackage;
+```
+
+For a manually started listener, set `NOTIFICATION_HISTORY_MAX_ENTRIES` to a
+positive integer (default: `100`):
+
+```sh
+NOTIFICATION_HISTORY_MAX_ENTRIES=250 notification-history listen
 ```
 
 Build the standalone package and run its isolated integration checks:

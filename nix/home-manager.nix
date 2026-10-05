@@ -13,6 +13,11 @@ in
 {
   options.services.notification-history = {
     enable = lib.mkEnableOption "persistent desktop notification history";
+    maxEntries = lib.mkOption {
+      type = lib.types.ints.positive;
+      default = 100;
+      description = "Maximum number of notifications to retain. Older records are removed on listener startup and after each write.";
+    };
     package = lib.mkOption {
       type = lib.types.package;
       default = pkgs.callPackage ./package.nix {
@@ -33,7 +38,10 @@ in
       Service = {
         Type = "simple";
         ExecStart = "${cfg.package}/bin/notification-history listen";
-        Environment = [ "XDG_DATA_HOME=${config.xdg.dataHome}" ];
+        Environment = [
+          "XDG_DATA_HOME=${config.xdg.dataHome}"
+          "NOTIFICATION_HISTORY_MAX_ENTRIES=${toString cfg.maxEntries}"
+        ];
         Restart = "on-failure";
         RestartSec = 2;
         UMask = "0077";
