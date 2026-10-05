@@ -94,6 +94,21 @@ copy_notification() {
         wl-copy --type 'text/plain;charset=utf-8'
 }
 
+view_notification() (
+    local entry file
+    entry=$(record "${1:-}")
+    [[ $(jq 'length' <<<"$entry") == 1 ]] || fail 'notification does not exist'
+    umask 077
+    file=$(mktemp "${TMPDIR:-/tmp}/notification-history.XXXXXXXXXX.txt")
+    trap 'rm -f -- "$file"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM HUP
+    jq -jr '.[0] | .summary + (if .body == "" then "" else "\n" + .body end)' <<<"$entry" >"$file"
+    # Keep the user's configuration, but do not process notification modelines
+    # or retain the private temporary file in ShaDa history.
+    nvim -R -n -i NONE --cmd 'set nomodeline' -- "$file"
+)
+
 list_notifications() {
     [[ -f "$database" ]] || return 0
     db -readonly -json "SELECT id, app_name, summary,
@@ -105,22 +120,22 @@ list_notifications() {
 }
 
 picker() {
-    local input selection quoted_self status header cleanup_command
+    local input quoted_self status header cleanup_command
     input=$(mktemp)
     printf -v cleanup_command 'rm -f -- %q' "$input"
     # Capture the safely quoted path now, before this function's locals go away.
     # shellcheck disable=SC2064
     trap "$cleanup_command" EXIT
     list_notifications >"$input"
-    header='Enter: copy title and body · Esc: close'
+    header='Enter: view in Neovim · Esc: close'
     [[ -s "$input" ]] || header='No notifications saved yet · Esc: close'
     printf -v quoted_self '%q' "$self"
-    if selection=$(fzf-popup --title "Notification history" -- --with-shell "$BASH -c" \
+    if fzf-popup --title "Notification history" -- --with-shell "$BASH -c" \
         --delimiter=$'\t' --with-nth=2.. --no-sort \
         --prompt='Notifications> ' --header="$header" \
-        --preview="$quoted_self preview {1}" --preview-window='right,60%,wrap' <"$input"); then
-        [[ -n "$selection" ]] || return 0
-        copy_notification "${selection%%$'\t'*}"
+        --preview="$quoted_self preview {1}" --preview-window='right,60%,wrap' \
+        --bind="enter:become($quoted_self view {1} </dev/tty >/dev/tty 2>&1)" <"$input" >/dev/null; then
+        return 0
     else
         status=$?
         # fzf returns 1 for no match and 130 when the user cancels.
@@ -129,7 +144,7 @@ picker() {
 }
 
 usage() {
-    printf '%s\n' 'Usage: notification-history [browse | listen | preview ID | copy ID]'
+    printf '%s\n' 'Usage: notification-history [browse | listen | preview ID | view ID | copy ID]'
 }
 
 command="${1:-browse}"
@@ -142,9 +157,13 @@ case "$command" in
             _picker) picker ;;
         esac
         ;;
-    preview|copy)
+    preview|view|copy)
         [[ $# == 2 ]] || fail "$command requires a notification ID"
-        if [[ "$command" == preview ]]; then preview "$2"; else copy_notification "$2"; fi
+        case "$command" in
+            preview) preview "$2" ;;
+            view) view_notification "$2" ;;
+            copy) copy_notification "$2" ;;
+        esac
         ;;
     -h|--help) usage ;;
     *) usage >&2; fail "unknown command: $command" ;;

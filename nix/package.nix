@@ -6,6 +6,7 @@
   sqlite,
   util-linux,
   fzf-popup,
+  neovim,
   wl-clipboard,
 }:
 
@@ -18,7 +19,9 @@ writeShellApplication {
     sqlite
     util-linux
     fzf-popup
+    neovim
     wl-clipboard
   ];
   text = builtins.readFile ../src/notification-history;
+  passthru = { inherit neovim; };
 }

@@ -6,13 +6,23 @@ After applying the configuration, the listener starts with the graphical session
 
 - Open history: `notification-history` or `notification-history browse`.
 - Preview a record: `notification-history preview ID`.
+- View its title and body in read-only Neovim: `notification-history view ID`.
 - Copy its title and body: `notification-history copy ID`.
 - Inspect the listener: `systemctl --user status notification-history.service`.
 - Read listener errors: `journalctl --user -u notification-history.service`.
 
 The menu uses the independent `fzf-popup` package. Configure its launcher to
 open your preferred terminal and configure floating behavior in your window manager.
-Enter copies the title and body separated by a newline. Escape closes the menu.
+Enter replaces the menu with read-only Neovim in the same terminal, showing the
+title and full body separated by a newline (only the title if the body is empty).
+Your existing Neovim configuration is used. Quit Neovim to close the popup;
+Escape cancels the menu. Neither action changes the clipboard. The explicit
+`copy ID` command remains available.
+
+Viewing writes the original text into a private temporary file, which is deleted
+when Neovim exits, including on editor failure. Swap files, ShaDa history and
+notification modelines are disabled. List and preview text still filters terminal
+control characters; stored text, editor contents and explicit copies preserve it.
 The database is `${XDG_DATA_HOME:-$HOME/.local/share}/notification-history/history.sqlite3`.
 
 The listener records incoming desktop `Notify` requests, including requests sent
@@ -49,6 +59,7 @@ The package can be configured independently of the service:
 ```nix
 package = inputs.notification-history.packages.${pkgs.stdenv.hostPlatform.system}.default.override {
   fzf-popup = yourConfiguredPopupPackage;
+  neovim = yourConfiguredNeovimPackage;
 };
 ```
 

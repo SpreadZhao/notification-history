@@ -36,12 +36,18 @@ class NotificationHistory(unittest.TestCase):
         self.database = self.root / "data/notification-history/history.sqlite3"
         self.mocks = self.root / "bin"
         self.mocks.mkdir()
+        temporary = self.root / "temporary files"
+        temporary.mkdir()
         self.env.update(
             PATH=f"{self.mocks}:{self.env['PATH']}",
             MOCK_LOG=str(self.root / "commands.jsonl"),
             MOCK_COPY=str(self.root / "clipboard"),
             FZF_POPUP_LAUNCHER=str(self.mocks / "launcher"),
             REAL_FZF=os.environ.get("REAL_FZF", shutil.which("fzf") or "fzf"),
+            REAL_NVIM=os.environ.get("REAL_NVIM", shutil.which("nvim") or "nvim"),
+            MOCK_VIEW=str(self.root / "view.json"),
+            MOCK_NVIM_STATE=str(self.root / "nvim-state"),
+            TMPDIR=str(temporary),
         )
         mock = f"#!{sys.executable}\n" + '''
 import json, os, pathlib, subprocess, sys
@@ -52,6 +58,8 @@ if name == 'wl-copy':
     pathlib.Path(os.environ['MOCK_COPY']).write_bytes(sys.stdin.buffer.read())
 elif name == 'fzf':
     if os.environ.get('MOCK_USE_REAL_FZF'):
+        with open('/dev/tty') as tty:
+            pathlib.Path(os.environ['MOCK_VIEW'] + '.tty').write_text(str(os.fstat(tty.fileno()).st_rdev))
         os.execv(os.environ['REAL_FZF'], [os.environ['REAL_FZF'], *sys.argv[1:]])
     lines = sys.stdin.read().splitlines()
     pathlib.Path(os.environ['MOCK_LOG'] + '.list').write_text('\\n'.join(lines))
@@ -60,8 +68,20 @@ elif name == 'fzf':
     if lines: print(lines[0])
 elif name == 'launcher':
     sys.exit(subprocess.call(sys.argv[1:]))
+elif name == 'nvim':
+    file = pathlib.Path(sys.argv[-1])
+    pathlib.Path(os.environ['MOCK_VIEW']).write_text(json.dumps({
+        'path': str(file), 'content': file.read_text(),
+        'mode': file.stat().st_mode & 0o777,
+        'tty': [os.fstat(fd).st_rdev if os.isatty(fd) else None for fd in (0, 1, 2)],
+    }))
+    if os.environ.get('MOCK_USE_REAL_NVIM'):
+        os.execv(os.environ['REAL_NVIM'], [os.environ['REAL_NVIM'], '-u', 'NONE',
+            '--cmd', 'autocmd VimEnter * call writefile([string(&readonly), string(&modeline)], $MOCK_NVIM_STATE)',
+            *sys.argv[1:]])
+    sys.exit(int(os.environ.get('MOCK_NVIM_EXIT', '0')))
 '''
-        for name in ("wl-copy", "fzf", "launcher"):
+        for name in ("wl-copy", "fzf", "launcher", "nvim"):
             path = self.mocks / name
             path.write_text(mock)
             path.chmod(0o755)
@@ -202,20 +222,24 @@ elif name == 'launcher':
         self.send("newer\tline", "new")
         newest = self.rows(2)[-1]
         self.run_app()  # Default command opens the floating terminal.
-        self.assertEqual((self.root / "clipboard").read_text(), "newer\tline\nnew")
+        self.assertFalse((self.root / "clipboard").exists())
         commands = [json.loads(line) for line in
                     (self.root / "commands.jsonl").read_text().splitlines()]
         self.assertEqual(commands[0][0], "launcher")
         fzf = next(command for command in commands if command[0] == "fzf")
         self.assertIn("--preview-window=right,60%,wrap", fzf)
         self.assertIn("preview {1}", next(arg for arg in fzf if arg.startswith("--preview=")))
+        self.assertIn("view {1} </dev/tty >/dev/tty 2>&1",
+                      next(arg for arg in fzf if arg.startswith("--bind=enter:become(")))
+        self.assertIn("--header=Enter: view in Neovim · Esc: close", fzf)
         listing = (self.root / "commands.jsonl.list").read_text().splitlines()
         self.assertTrue(listing[0].startswith(str(newest[0]) + "\t"))
         self.assertEqual(len(listing), 2)
-        clipboard = (self.root / "clipboard").read_bytes()
+        clipboard = self.root / "clipboard"
+        clipboard.write_bytes(b"existing clipboard")
         self.env["MOCK_FZF_EXIT"] = "130"
         self.run_app("browse")
-        self.assertEqual((self.root / "clipboard").read_bytes(), clipboard)
+        self.assertEqual(clipboard.read_bytes(), b"existing clipboard")
         self.env["MOCK_FZF_EXIT"] = "2"
         self.assertEqual(self.run_app("browse", check=False).returncode, 2)
 
@@ -230,11 +254,44 @@ elif name == 'launcher':
         self.run_app("browse")
         self.assertFalse((self.root / "unused").exists())
 
+    def test_view_content_permissions_and_cleanup(self):
+        clipboard = self.root / "clipboard"
+        clipboard.write_bytes(b"existing clipboard")
+        notifications = [("中文 'quoted' \\ title\nline", "正文\n\tend\n\n"),
+                         ("Only a title", ""),
+                         ("control\x1b[31m", "body\x07\u009b")]
+        for count, (summary, body) in enumerate(notifications, 1):
+            self.send(summary, body)
+            row = self.rows(count)[-1]
+            self.run_app("view", str(row[0]))
+            view = json.loads((self.root / "view.json").read_text())
+            self.assertEqual(view["content"], summary + ("\n" + body if body else ""))
+            self.assertEqual(view["mode"], 0o600)
+            self.assertFalse(Path(view["path"]).exists())
+        commands = [json.loads(line) for line in
+                    (self.root / "commands.jsonl").read_text().splitlines()]
+        editors = [command for command in commands if command[0] == "nvim"]
+        self.assertEqual(len(editors), len(notifications))
+        for command in editors:
+            self.assertEqual(command[1:-1], ["-R", "-n", "-i", "NONE", "--cmd", "set nomodeline", "--"])
+        self.env["MOCK_NVIM_EXIT"] = "7"
+        self.assertEqual(self.run_app("view", str(row[0]), check=False).returncode, 7)
+        self.assertFalse(Path(json.loads((self.root / "view.json").read_text())["path"]).exists())
+        self.assertEqual(clipboard.read_bytes(), b"existing clipboard")
+        self.assertEqual(list(Path(self.env["TMPDIR"]).iterdir()), [])
+        previous = (self.root / "commands.jsonl").read_bytes()
+        for invalid in ("999999", "1; DROP TABLE notifications", "-1", "0", ""):
+            self.assertNotEqual(self.run_app("view", invalid, check=False).returncode, 0)
+        self.assertEqual((self.root / "commands.jsonl").read_bytes(), previous)
+        self.assertEqual(list(Path(self.env["TMPDIR"]).iterdir()), [])
+
     def test_real_fzf_preview_and_enter(self):
         self.send("Interactive title", "PREVIEW-CONTENT-MARKER")
         self.rows(1)
-        self.env.update(MOCK_USE_REAL_FZF="1", TERM="xterm-256color",
+        self.env.update(MOCK_USE_REAL_FZF="1", MOCK_USE_REAL_NVIM="1", TERM="xterm-256color",
                         FZF_DEFAULT_OPTS="")
+        clipboard = self.root / "clipboard"
+        clipboard.write_bytes(b"existing clipboard")
         pid, terminal = pty.fork()
         if pid == 0:
             os.execvpe("bash", ["bash", str(SCRIPT), "_picker"], self.env)
@@ -253,16 +310,49 @@ elif name == 'launcher':
                         break
             self.assertIn(b"PREVIEW-CONTENT-MARKER", output)
             os.write(terminal, b"\r")
+            state = self.root / "nvim-state"
+            deadline = time.monotonic() + 5
             while time.monotonic() < deadline:
+                if select.select([terminal], [], [], 0.05)[0]:
+                    chunk = os.read(terminal, 65536)
+                    output.extend(chunk)
+                    if b"\x1b[6n" in chunk:
+                        os.write(terminal, b"\x1b[1;1R")
+                if state.exists():
+                    break
+            self.assertTrue(state.exists(), "Enter did not open Neovim")
+            self.assertEqual(state.read_text().splitlines(), ["1", "0"])
+            view = json.loads((self.root / "view.json").read_text())
+            self.assertEqual(view["content"], "Interactive title\nPREVIEW-CONTENT-MARKER")
+            self.assertEqual(view["mode"], 0o600)
+            tty = int((self.root / "view.json.tty").read_text())
+            self.assertEqual(view["tty"], [tty, tty, tty])
+            self.assertTrue(Path(view["path"]).exists())
+            self.assertEqual(os.waitpid(pid, os.WNOHANG)[0], 0)
+            os.write(terminal, b"\x1b:q!\r")
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                if select.select([terminal], [], [], 0.02)[0]:
+                    try:
+                        os.read(terminal, 65536)
+                    except OSError:
+                        pass
                 child, status = os.waitpid(pid, os.WNOHANG)
                 if child:
                     exited = True
                     self.assertEqual(os.waitstatus_to_exitcode(status), 0)
                     break
                 time.sleep(0.02)
-            self.assertTrue(exited, "fzf did not exit after Enter")
-            self.assertEqual((self.root / "clipboard").read_text(),
-                             "Interactive title\nPREVIEW-CONTENT-MARKER")
+            self.assertTrue(exited, "menu did not close after quitting Neovim")
+            self.assertFalse(Path(view["path"]).exists())
+            self.assertEqual(clipboard.read_bytes(), b"existing clipboard")
+            commands = [json.loads(line) for line in
+                        (self.root / "commands.jsonl").read_text().splitlines()]
+            self.assertEqual(sum(command[0] == "launcher" for command in commands), 1)
+            # Neovim owns a separate nvim.<user> temporary directory. Only the
+            # application's files and popup working directory must be gone.
+            self.assertTrue(all(path.is_dir() and path.name.startswith("nvim.")
+                                for path in Path(self.env["TMPDIR"]).iterdir()))
         finally:
             if not exited:
                 os.killpg(pid, signal.SIGKILL)

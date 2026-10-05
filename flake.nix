@@ -61,6 +61,7 @@
               wl-clipboard
               dbus
               fzf
+              neovim
               python3
               shellcheck
               nixfmt
@@ -93,12 +94,14 @@
                   wl-clipboard
                   dbus
                   fzf
+                  neovim
                   python3
                   shellcheck
                   nixfmt
                 ];
                 application = self.packages.${system}.default;
                 REAL_FZF = "${pkgs.fzf}/bin/fzf";
+                REAL_NVIM = "${pkgs.neovim}/bin/nvim";
                 DBUS_SESSION_CONF = "${pkgs.dbus}/share/dbus-1/session.conf";
               }
               ''
