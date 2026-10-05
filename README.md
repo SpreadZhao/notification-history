@@ -15,7 +15,8 @@ The menu uses the independent `fzf-popup` package. Configure its launcher to
 open your preferred terminal and configure floating behavior in your window manager.
 Enter replaces the menu with read-only Neovim in the same terminal, showing the
 title and full body separated by a newline (only the title if the body is empty).
-Your existing Neovim configuration is used. Quit Neovim to close the popup;
+Your existing Neovim configuration is used, with word wrapping enabled for the
+notification window (`wrap` and `linebreak`). Quit Neovim to close the popup;
 Escape cancels the menu. Neither action changes the clipboard. The explicit
 `copy ID` command remains available.
 

@@ -77,7 +77,8 @@ elif name == 'nvim':
     }))
     if os.environ.get('MOCK_USE_REAL_NVIM'):
         os.execv(os.environ['REAL_NVIM'], [os.environ['REAL_NVIM'], '-u', 'NONE',
-            '--cmd', 'autocmd VimEnter * call writefile([string(&readonly), string(&modeline)], $MOCK_NVIM_STATE)',
+            '-c', 'setlocal nowrap nolinebreak',
+            '--cmd', 'autocmd VimEnter * call writefile([string(&readonly), string(&modeline), string(&wrap), string(&linebreak)], $MOCK_NVIM_STATE)',
             *sys.argv[1:]])
     sys.exit(int(os.environ.get('MOCK_NVIM_EXIT', '0')))
 '''
@@ -273,7 +274,8 @@ elif name == 'nvim':
         editors = [command for command in commands if command[0] == "nvim"]
         self.assertEqual(len(editors), len(notifications))
         for command in editors:
-            self.assertEqual(command[1:-1], ["-R", "-n", "-i", "NONE", "--cmd", "set nomodeline", "--"])
+            self.assertEqual(command[1:-1], ["-R", "-n", "-i", "NONE", "--cmd", "set nomodeline",
+                                           "-c", "setlocal wrap linebreak", "--"])
         self.env["MOCK_NVIM_EXIT"] = "7"
         self.assertEqual(self.run_app("view", str(row[0]), check=False).returncode, 7)
         self.assertFalse(Path(json.loads((self.root / "view.json").read_text())["path"]).exists())
@@ -321,7 +323,7 @@ elif name == 'nvim':
                 if state.exists():
                     break
             self.assertTrue(state.exists(), "Enter did not open Neovim")
-            self.assertEqual(state.read_text().splitlines(), ["1", "0"])
+            self.assertEqual(state.read_text().splitlines(), ["1", "0", "1", "1"])
             view = json.loads((self.root / "view.json").read_text())
             self.assertEqual(view["content"], "Interactive title\nPREVIEW-CONTENT-MARKER")
             self.assertEqual(view["mode"], 0o600)

@@ -106,7 +106,7 @@ view_notification() (
     jq -jr '.[0] | .summary + (if .body == "" then "" else "\n" + .body end)' <<<"$entry" >"$file"
     # Keep the user's configuration, but do not process notification modelines
     # or retain the private temporary file in ShaDa history.
-    nvim -R -n -i NONE --cmd 'set nomodeline' -- "$file"
+    nvim -R -n -i NONE --cmd 'set nomodeline' -c 'setlocal wrap linebreak' -- "$file"
 )
 
 list_notifications() {
