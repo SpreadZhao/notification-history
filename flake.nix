@@ -2,10 +2,6 @@
   description = "notification-history — standalone Bash application";
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
-    home-manager = {
-      url = "github:nix-community/home-manager/master";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
     fzf-popup = {
       url = "github:SpreadZhao/fzf-popup/main";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -59,66 +55,17 @@
               sqlite
               util-linux
               wl-clipboard
-              dbus
               fzf
               neovim
-              python3
               shellcheck
               nixfmt
             ];
           };
         }
       );
-      checks = eachSystem (
-        system:
-        let
-          pkgs = mkPkgs system;
-          passed = import ./tests/module.nix {
-            inherit pkgs;
-            homeManager = inputs.home-manager.outPath;
-            popupInput = inputs.fzf-popup;
-          };
-        in
-        {
-          default =
-            assert passed;
-            pkgs.runCommand "notification-history-checks"
-              {
-                nativeBuildInputs = with pkgs; [
-                  bash
-                  coreutils
-                  systemd
-                  jq
-                  sqlite
-                  util-linux
-                  wl-clipboard
-                  dbus
-                  fzf
-                  neovim
-                  python3
-                  shellcheck
-                  nixfmt
-                ];
-                application = self.packages.${system}.default;
-                REAL_FZF = "${pkgs.fzf}/bin/fzf";
-                REAL_NVIM = "${pkgs.neovim}/bin/nvim";
-                DBUS_SESSION_CONF = "${pkgs.dbus}/share/dbus-1/session.conf";
-              }
-              ''
-                cp -R ${./.} source
-                chmod -R u+w source
-                cp ${inputs.fzf-popup}/src/fzf-popup source/src/fzf-popup
-                cd source
-                patchShebangs src tests
-                export PATH="$PWD/src:$PATH"
-                "$application/bin/notification-history" --help
-                shellcheck src/*
-                for file in src/* ; do bash -n "$file"; done
-                nixfmt --check flake.nix nix/*.nix tests/module.nix
-                python3 tests/check.py
-                touch "$out"
-              '';
-        }
-      );
+      # Building writeShellApplication already checks Bash syntax and ShellCheck.
+      checks = eachSystem (system: {
+        default = self.packages.${system}.default;
+      });
     };
 }

@@ -7,38 +7,17 @@
         ]
       },
       "locked": {
-        "lastModified": 1791185259,
-        "narHash": "sha256-HmeCoifbFjk7KRGsdhAousEueNjNPow57V+YgdzjJwM=",
+        "lastModified": 1791207319,
+        "narHash": "sha256-5Skej5fQkAtY19Wkzt5oHcEAeRlM+QohdKHp5bK+fi0=",
         "owner": "SpreadZhao",
         "repo": "fzf-popup",
-        "rev": "4bfcf7a137b5cfba6afc5a95268b9ca74f9d7a1b",
+        "rev": "83bb7e2ff7a6086d582737d0f5621fe0a44f741d",
         "type": "github"
       },
       "original": {
         "owner": "SpreadZhao",
         "ref": "main",
         "repo": "fzf-popup",
-        "type": "github"
-      }
-    },
-    "home-manager": {
-      "inputs": {
-        "nixpkgs": [
-          "nixpkgs"
-        ]
-      },
-      "locked": {
-        "lastModified": 1790928438,
-        "narHash": "sha256-ZuJbu8VQe/Qzy7GJdZ3Xv7adRllH1o4O7nqONtkhFbA=",
-        "owner": "nix-community",
-        "repo": "home-manager",
-        "rev": "833540099ef43cbeb28b1e3f3c21901961edb48e",
-        "type": "github"
-      },
-      "original": {
-        "owner": "nix-community",
-        "ref": "master",
-        "repo": "home-manager",
         "type": "github"
       }
     },
@@ -61,7 +40,6 @@
     "root": {
       "inputs": {
         "fzf-popup": "fzf-popup",
-        "home-manager": "home-manager",
         "nixpkgs": "nixpkgs"
       }
     }

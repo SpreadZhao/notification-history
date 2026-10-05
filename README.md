@@ -49,7 +49,7 @@ positive integer (default: `100`):
 NOTIFICATION_HISTORY_MAX_ENTRIES=250 notification-history listen
 ```
 
-Build the standalone package and run its isolated integration checks:
+Build the standalone package and run its basic package checks:
 
 ```sh
 nix build
@@ -62,8 +62,7 @@ For untracked additions, use `path:$PWD` as the flake reference.
 
 Add `github:SpreadZhao/notification-history/main` as an input and import
 `inputs.notification-history.homeManagerModules.default`. Its
-`services.notification-history.enable` defaults to false. Both its `nixpkgs`
-and `home-manager` inputs can follow your corresponding root inputs.
+`services.notification-history.enable` defaults to false. Its `nixpkgs` input can follow your root nixpkgs.
 The `fzf-popup` input can also follow a root input of the same name.
 
 The package can be configured independently of the service:
@@ -82,5 +81,8 @@ Without a launcher, browsing uses the current terminal. No Foot or Niri dependen
 is included here. The listener and database commands do not require a terminal.
 
 Packages, apps, checks, formatter and development shells support x86_64-linux
-and aarch64-linux. `nix develop` supplies runtime and test dependencies;
-`tests/check.py` runs its own private D-Bus session.
+and aarch64-linux. `nix develop` supplies runtime and development tools.
+
+`nix flake check` builds the program and uses the built-in Bash syntax and
+ShellCheck checks from `writeShellApplication`. No custom test suite or Python
+test dependency is included.
